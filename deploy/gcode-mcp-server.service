@@ -1,0 +1,30 @@
+[Unit]
+Description=Gcode MCP Server — MCP Tool 执行层
+After=network.target
+
+[Service]
+Type=simple
+User=gcode
+Group=gcode
+WorkingDirectory=/opt/gcode
+ExecStart=/opt/gcode/venv/bin/python -m src.gcode.mcp.server
+EnvironmentFile=/opt/gcode/.env
+Restart=on-failure
+RestartSec=5
+
+# 安全加固
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/run/gcode /var/log /data
+ReadOnlyPaths=/opt/gcode
+
+# 允许 podman 子进程
+Delegate=yes
+
+# SELinux (麒麟OS)
+SELinuxContext=system_u:system_r:svirt_socket_t:s0
+
+[Install]
+WantedBy=multi-user.target

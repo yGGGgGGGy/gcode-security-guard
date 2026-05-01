@@ -57,3 +57,14 @@ class GcodeMCPServer:
 
 
 server = GcodeMCPServer()
+
+
+async def main():
+    logging.basicConfig(level=logging.INFO)
+    logger.info("Starting Gcode MCP Server...")
+    await server.run()
+
+
+if __name__ == "__main__":
+    import asyncio
+    asyncio.run(main())

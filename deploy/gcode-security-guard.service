@@ -1,0 +1,28 @@
+[Unit]
+Description=Gcode Security Guard — 意图过滤 + 审计系统
+After=network.target gcode-mcp-server.service
+Requires=gcode-mcp-server.service
+
+[Service]
+Type=simple
+User=gcode
+Group=gcode
+WorkingDirectory=/opt/gcode
+ExecStart=/opt/gcode/venv/bin/python -m src.api.server
+EnvironmentFile=/opt/gcode/.env
+Restart=on-failure
+RestartSec=5
+
+# 安全加固
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/run/gcode /data
+ReadOnlyPaths=/opt/gcode
+
+# SELinux (麒麟OS)
+SELinuxContext=system_u:system_r:svirt_socket_t:s0
+
+[Install]
+WantedBy=multi-user.target

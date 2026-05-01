@@ -1,0 +1,33 @@
+# gcode-selinux.te — Gcode SELinux 策略模块
+# 适用于麒麟OS（基于 CentOS/Fedora，使用 SELinux）
+#
+# 安装方法:
+#   checkmodule -M -m -o gcode-selinux.mod gcode-selinux.te
+#   semodule_package -o gcode-selinux.pp -m gcode-selinux.mod
+#   sudo semodule -i gcode-selinux.pp
+
+module gcode-selinux 1.0;
+
+require {
+    type unconfined_service_t;
+    type tmpfs_t;
+    type init_t;
+    class sock_file { create unlink write };
+    class unix_stream_socket { connectto read write };
+    class capability { sys_admin dac_override };
+    class process { setpgid signal };
+}
+
+# 允许 gcode 服务创建和管理 Unix Socket
+allow unconfined_service_t tmpfs_t:sock_file { create unlink write };
+
+# 允许安全层连接执行层的 socket
+allow unconfined_service_t unconfined_service_t:unix_stream_socket { connectto read write };
+
+# 允许执行层调用 systemctl / dnf（受 CapabilityBoundingSet 约束）
+allow unconfined_service_t self:capability { sys_admin dac_override };
+
+# 麒麟OS 特有: 如果系统使用 targeted 策略，可能需要:
+#   setsebool -P gcode_manage_services 1
+# 自定义布尔值（可选）:
+#   setsebool -P gcode_can_network 1
