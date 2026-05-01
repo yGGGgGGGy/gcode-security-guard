@@ -19,6 +19,7 @@ from typing import Any
 
 from ..audit.logger import AuditLogger
 from ..intent.classifier import IntentClassifier
+from ..contracts.types import SessionContext, ToolCallRecord
 
 SOCKET_PATH = "/run/gcode/gcode.sock"
 DP1_SOCKET_PATH = "/run/gcode/gcode-dp1.sock"
@@ -134,46 +135,73 @@ class GcodeServer:
                 })
                 return
 
-            # Step 3: safe — 转发给dp1
-            self._audit.trace_event(record, "Forwarding to dp1 MCP Server")
-            result = self._forward_to_dp1(request, classification)
+            # Step 3: safe — 构建SessionContext，转发给dp1
+            ctx = self._build_session_context(request, classification)
+            self._audit.trace_event(record, f"Forwarding to dp1 with SessionContext: {ctx.to_dict()}")
+
+            result, tool_records = self._forward_to_dp1(ctx, ctx.filtered_input, {})
+            tools_called = [r.tool_name for r in tool_records]
+            request_ids = [r.audit_id for r in tool_records]
+
+            self._audit.finalize(
+                record,
+                tools_called=tools_called,
+                request_ids=request_ids,
+                results_summary=json.dumps(result, ensure_ascii=False),
+                final_status="success" if result.get("status") != "error" else "execution_error",
+                duration_total_ms=record.duration_total_ms,
+            )
 
             self._send_json(conn, {
                 "status": "success",
                 "data": result,
+                "audit_id": record.audit_id,
             })
 
-    def _forward_to_dp1(self, request: dict, classification: Any) -> dict:
-        """转发请求给dp1 MCP Server。"""
+    def _build_session_context(self, request: dict, classification: Any) -> SessionContext:
+        """从意图分类结果构建 dp1 所需的 SessionContext。"""
+        session_id = request.get("session_id", str(uuid.uuid4()))
+        user_id = request.get("user_id", "unknown")
+        query = request.get("query", "")
+
+        return SessionContext(
+            session_id=session_id,
+            filtered_input=query,
+            risk_score=1.0 - classification.confidence,
+            risk_verdict=classification.intent,
+            capability_set=classification.categories,
+            reason=f"Intent: {classification.top_label} (conf={classification.confidence:.2f})",
+            user_id=user_id,
+        )
+
+    def _forward_to_dp1(self, ctx: SessionContext, tool_name: str, params: dict) -> tuple[dict, list[ToolCallRecord]]:
+        """转发请求给dp1 MCP Server，返回 (原始响应, ToolCallRecord列表)。"""
         try:
             dp1_sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
             dp1_sock.settimeout(30)
             dp1_sock.connect(self._dp1_socket_path)
 
-            payload = {
-                "request_id": request.get("request_id", str(uuid.uuid4())),
-                "tool_name": request.get("tool_name", ""),
-                "parameters": request.get("parameters", {}),
-                "user_id": request.get("user_id", ""),
-                "session_id": request.get("session_id", ""),
-                "permission_level": self._map_permission(classification),
-            }
-            dp1_sock.sendall(json.dumps(payload).encode() + b"\n")
+            dp1_sock.sendall(json.dumps(ctx.to_dict()).encode() + b"\n")
 
             raw = dp1_sock.recv(65536)
             dp1_sock.close()
-            return json.loads(raw)
+            response_data = json.loads(raw)
+
+            # 提取 ToolCallRecord 供审计
+            records = self._extract_tool_records(response_data, ctx.session_id)
+            return response_data, records
         except FileNotFoundError:
-            return {"error": "MCP Server (dp1) not available", "status": "error"}
+            return {"error": "MCP Server (dp1) not available", "status": "error"}, []
         except Exception as e:
-            return {"error": str(e), "status": "error"}
+            return {"error": str(e), "status": "error"}, []
 
     @staticmethod
-    def _map_permission(classification: Any) -> str:
-        categories = classification.categories
-        if any("write" in c or "delete" in c or "modify" in c or "kill" in c for c in categories):
-            return "read_write"
-        return "read_only"
+    def _extract_tool_records(response: dict, session_id: str) -> list[ToolCallRecord]:
+        """从dp1响应中提取ToolCallRecord列表。"""
+        raw_records = response.get("tool_calls", [])
+        if isinstance(raw_records, list):
+            return [ToolCallRecord.from_dict(r) for r in raw_records]
+        return []
 
     @staticmethod
     def _send_json(conn: socket.SocketType, data: dict) -> None:
