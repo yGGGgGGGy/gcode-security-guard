@@ -5,7 +5,8 @@ import subprocess
 import time
 from dataclasses import dataclass, field
 
-import requests
+import urllib.request
+import urllib.error
 
 
 @dataclass
@@ -24,13 +25,14 @@ class Checker:
     def http(url: str, timeout: int = 5, expect_status: int = 200) -> CheckResult:
         start = time.time()
         try:
-            resp = requests.get(url, timeout=timeout)
+            resp = urllib.request.urlopen(url, timeout=timeout)
             latency = (time.time() - start) * 1000
-            if resp.status_code == expect_status:
-                return CheckResult(url, "ok", latency, f"HTTP {resp.status_code}")
+            status = resp.getcode()
+            if status == expect_status:
+                return CheckResult(url, "ok", latency, f"HTTP {status}")
             return CheckResult(url, "warn", latency,
-                               f"HTTP {resp.status_code} (expected {expect_status})")
-        except requests.RequestException as e:
+                               f"HTTP {status} (expected {expect_status})")
+        except (urllib.error.URLError, OSError) as e:
             latency = (time.time() - start) * 1000
             return CheckResult(url, "fail", latency, str(e))
 
