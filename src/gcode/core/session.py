@@ -16,8 +16,9 @@ DEFAULT_DB = Path.home() / ".gcode" / "sessions.db"
 class SessionManager:
     """Manages interactive Q&A sessions with conversation history."""
 
-    def __init__(self, db_path: Path | None = None):
+    def __init__(self, db_path: Path | None = None, config=None):
         self.db_path = str(db_path or DEFAULT_DB)
+        self.config = config
         self._ensure_db()
 
     def _ensure_db(self):
@@ -90,11 +91,11 @@ class SessionManager:
         query_lower = query.lower()
 
         if any(w in query_lower for w in ("status", "health", "check", "状态")):
-            return "[monitor] Health check: all systems nominal."
+            return self._handle_monitor()
         if any(w in query_lower for w in ("alert", "alarm", "告警")):
-            return "[alert] No active alerts."
+            return self._handle_alerts()
         if any(w in query_lower for w in ("log", "日志", "error")):
-            return "[logpipe] Recent logs: nothing anomalous detected."
+            return self._handle_logs(query_lower)
         if any(w in query_lower for w in ("runbook", "run", "execute", "执行")):
             return "[engine] Runbook engine ready. Use `gcode run <file>` to execute."
         if any(w in query_lower for w in ("report", "报告")):
@@ -104,6 +105,58 @@ class SessionManager:
             "I can help with: service status, alerts, logs, runbook execution, "
             "and report generation. Try asking about any of these."
         )
+
+    @staticmethod
+    def _handle_monitor() -> str:
+        try:
+            from gcode.monitor.evaluator import Evaluator
+            config = Evaluator.default_checks()
+            result = Evaluator.run_checks(config)
+            lines = [f"Health check: {result.ok_count} OK, {result.warn_count} WARN, {result.fail_count} FAIL"]
+            for r in result.results:
+                if r.status != "ok":
+                    lines.append(f"  [{r.status}] {r.name}: {r.message}")
+            return "\n".join(lines)
+        except Exception as e:
+            return f"[monitor] Error running health check: {e}"
+
+    @staticmethod
+    def _handle_alerts() -> str:
+        try:
+            from gcode.alert.engine import AlertEngine
+            engine = AlertEngine()
+            active = engine.active()
+            if not active:
+                return "[alert] No active alerts."
+            lines = [f"[alert] {len(active)} active alert(s):"]
+            for a in active[:5]:
+                lines.append(f"  [{a.severity.value}] {a.title}")
+            if len(active) > 5:
+                lines.append(f"  ... and {len(active) - 5} more")
+            return "\n".join(lines)
+        except Exception as e:
+            return f"[alert] Error checking alerts: {e}"
+
+    @staticmethod
+    def _handle_logs(query_lower: str) -> str:
+        try:
+            from gcode.logpipe.engine import LogPipeline
+            pipeline = LogPipeline()
+            keyword = None
+            for w in ("error", "warn", "fail", "panic", "oom"):
+                if w in query_lower:
+                    keyword = w
+                    break
+            entries = pipeline.query(level="ERROR" if keyword == "error" else None,
+                                     keyword=keyword, limit=10)
+            if not entries:
+                return "[logpipe] No matching log entries found."
+            lines = [f"[logpipe] {len(entries)} recent entries:"]
+            for e in entries:
+                lines.append(f"  {e.timestamp[:19]} [{e.level}] {e.source}: {e.message[:80]}")
+            return "\n".join(lines)
+        except Exception as e:
+            return f"[logpipe] Error querying logs: {e}"
 
     def _create_session(self, session_id: str):
         conn = sqlite3.connect(self.db_path)

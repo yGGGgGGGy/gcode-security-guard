@@ -10,6 +10,20 @@ console = Console()
 pipeline = LogPipeline()
 
 
+def _fire_alerts_for_anomalies(anomalies) -> None:
+    """Fire alerts for detected log anomalies."""
+    from gcode.alert.engine import AlertEngine, Severity
+
+    engine = AlertEngine()
+    for a in anomalies:
+        engine.fire(
+            title=f"Log anomaly: {a.pattern[:50]}",
+            severity=Severity.WARN,
+            source="logpipe:anomaly",
+            message=f"Pattern '{a.pattern}' occurred {a.count} times (threshold: {a.threshold})",
+        )
+
+
 def register_commands(cli_group):
     """Register logpipe commands to the CLI."""
 
@@ -59,7 +73,8 @@ def register_commands(cli_group):
 
     @log.command()
     @click.option("--threshold", "-t", default=10, help="Min occurrences for anomaly")
-    def anomalies(threshold):
+    @click.option("--alert/--no-alert", default=False, help="Fire alerts for detected anomalies")
+    def anomalies(threshold, alert):
         """Detect anomalous log patterns."""
         results = pipeline.detect_anomalies(threshold=threshold)
         if not results:
@@ -72,3 +87,7 @@ def register_commands(cli_group):
         for a in results:
             table.add_row(a.pattern[:60], str(a.count))
         console.print(table)
+
+        if alert and results:
+            _fire_alerts_for_anomalies(results)
+            console.print(f"[yellow]Fired {len(results)} alert(s) for detected anomalies.[/yellow]")

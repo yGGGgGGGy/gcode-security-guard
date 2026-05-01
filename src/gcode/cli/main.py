@@ -17,12 +17,14 @@ def main():
 
 
 @main.command()
-@click.option("--config", "-c", default="config.yaml", help="Path to config file")
-def serve(config):
+@click.option("--config", "-c", "config_path", default="config.yaml", help="Path to config file")
+def serve(config_path):
     """Start Gcode agent service."""
+    from gcode.core.config import load_config
+    cfg = load_config(config_path)
     console.print(f"[bold green]Starting Gcode agent[/bold green]")
-    console.print(f"Config: {config}")
-    SessionManager().start_interactive()
+    console.print(f"Config: {config_path}")
+    SessionManager(config=cfg).start_interactive()
 
 
 @main.command()

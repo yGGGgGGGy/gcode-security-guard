@@ -1,0 +1,66 @@
+# Gcode Security Guard - Configuration
+# Copy to config.yaml and customize as needed.
+
+# Health check targets
+monitor:
+  checks:
+    - type: http
+      url: http://localhost:8080/health
+      timeout: 5
+      expect_status: 200
+    - type: tcp
+      host: localhost
+      port: 22
+      timeout: 5
+    - type: process
+      name: nginx
+    - type: disk
+      path: /
+      warn_pct: 80
+      crit_pct: 95
+    - type: memory
+      warn_pct: 80
+      crit_pct: 95
+
+# Alert rules
+alert:
+  rules:
+    - name: disk-full
+      monitor: disk
+      condition: fail
+      cooldown_min: 5
+    - name: mem-high
+      monitor: memory
+      condition: warn
+      cooldown_min: 10
+    - name: svc-down
+      monitor: http
+      condition: fail
+      cooldown_min: 2
+
+  notifiers:
+    - channel: stdout
+
+# Log pipeline
+logpipe:
+  sources:
+    - name: syslog
+      type: file
+      path: /var/log/syslog
+    - name: auth
+      type: file
+      path: /var/log/auth.log
+
+  rules:
+    - name: oom
+      pattern: "Out of memory"
+      severity: error
+    - name: ssh-fail
+      pattern: "Failed password"
+      severity: warn
+
+# Intent classification (Qwen2.5)
+intent:
+  model: Qwen/Qwen2.5-0.5B
+  safe_threshold: 0.6
+  needs_review_threshold: 0.4

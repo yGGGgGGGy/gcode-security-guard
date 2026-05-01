@@ -4,6 +4,9 @@ version = "0.1.0"
 description = "Gcode Security Guard: 麒麟OS智能运维Agent — 意图过滤 + 审计系统"
 requires-python = ">=3.11"
 dependencies = [
+    "click>=8.1",
+    "rich>=13.0",
+    "pyyaml>=6.0",
     "transformers>=4.46",
     "torch>=2.4",
 ]

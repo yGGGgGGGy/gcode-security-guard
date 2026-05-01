@@ -81,7 +81,12 @@ class AlertEngine:
             return []
         with open(self.storage) as f:
             data = json.load(f)
-        return [Alert(**item) for item in data]
+        alerts = []
+        for item in data:
+            if isinstance(item.get("severity"), str):
+                item["severity"] = Severity(item["severity"])
+            alerts.append(Alert(**item))
+        return alerts
 
     def _save(self):
         with open(self.storage, "w") as f:
