@@ -66,5 +66,18 @@ def ask(query):
     console.print(response)
 
 
+# Register sub-module commands
+from gcode.monitor import register_commands as register_monitor
+from gcode.alert import register_commands as register_alert
+from gcode.logpipe import register_commands as register_logpipe
+from gcode.alert.cli import alert as alert_cli_group
+from gcode.logpipe.cli import logpipe as logpipe_cli_group
+
+register_monitor(main)
+register_alert(main)
+register_logpipe(main)
+main.add_command(alert_cli_group, name="alert-config")
+main.add_command(logpipe_cli_group, name="logpipe")
+
 if __name__ == "__main__":
     main()
