@@ -4,6 +4,7 @@ Persists conversation state and routes user queries through intent
 matching to available agent capabilities.
 """
 
+import asyncio
 import json
 import os
 import sqlite3
@@ -87,7 +88,61 @@ class SessionManager:
         return response
 
     def _process(self, query: str) -> str:
-        """Route query to appropriate handler based on intent."""
+        """Route query: prefer LLM reasoning if configured, else keyword fallback."""
+        if self._has_reasoner():
+            try:
+                return asyncio.run(self._process_with_reasoner(query))
+            except Exception as e:
+                return f"[reasoner] LLM 调用失败: {e}\n" + self._process_keyword(query)
+        return self._process_keyword(query)
+
+    def _has_reasoner(self) -> bool:
+        if not self.config:
+            return False
+        rc = self.config.reasoner
+        return bool(rc.api_key) or rc.provider == "ollama"
+
+    async def _process_with_reasoner(self, query: str) -> str:
+        from gcode.reasoning import create_reasoner
+
+        reasoner = create_reasoner(self.config)
+
+        # 取最近 10 条消息作为上下文
+        history_records = self._get_recent_history(limit=10)
+        history = [{"role": r["role"], "content": r["content"]} for r in history_records]
+
+        response = await reasoner.reason(query, history=history, allow_write=False)
+
+        if response.text and not response.tool_calls:
+            return response.text
+
+        if response.tool_calls:
+            lines = []
+            for tr in response.tool_results:
+                lines.append(f"[{tr['tool']}]\n{tr['result']}")
+            result_text = "\n\n".join(lines)
+            if response.text:
+                return f"{response.text}\n\n{result_text}"
+            return result_text
+
+        return response.text or "[reasoner] LLM 未返回有效响应"
+
+    def _get_recent_history(self, limit: int = 10) -> list[dict]:
+        try:
+            conn = sqlite3.connect(self.db_path)
+            rows = conn.execute(
+                "SELECT role, content FROM messages WHERE session_id = "
+                "(SELECT id FROM sessions ORDER BY created_at DESC LIMIT 1) "
+                "ORDER BY id DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+            conn.close()
+            return [{"role": r, "content": c} for r, c in reversed(rows)]
+        except Exception:
+            return []
+
+    def _process_keyword(self, query: str) -> str:
+        """Route query to appropriate handler based on keywords."""
         query_lower = query.lower()
 
         if any(w in query_lower for w in ("status", "health", "check", "状态")):

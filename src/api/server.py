@@ -3,7 +3,7 @@
 架构:
   用户请求 → Unix Socket → api/server.py
     → intent/classifier.py (意图过滤)
-      → [safe] → 转发给dp1 MCP Server (Unix Socket client)
+      → [safe] → 推理层（LLM 选择 Tool → 执行）
       → [unsafe] → 拒绝
       → [needs-review] → 拒绝，建议人工审核
     → audit/logger.py (全量记录)
@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import socket
@@ -20,6 +21,7 @@ from typing import Any
 from ..audit.logger import AuditLogger
 from ..intent.classifier import IntentClassifier
 from ..contracts.types import SessionContext, ToolCallRecord
+from ..gcode.core.config import GcodeConfig, load_config
 
 SOCKET_PATH = "/run/gcode/gcode.sock"
 DP1_SOCKET_PATH = "/run/gcode/gcode-dp1.sock"
@@ -28,18 +30,20 @@ DP1_SOCKET_PATH = "/run/gcode/gcode-dp1.sock"
 class GcodeServer:
     """Gcode安全守卫服务器。
 
-    监听Unix Domain Socket，接收用户请求，执行意图过滤后转发给dp1执行层。
+    监听Unix Domain Socket，接收用户请求，执行意图过滤后通过推理层执行。
     """
 
     def __init__(
         self,
         socket_path: str = SOCKET_PATH,
         dp1_socket_path: str = DP1_SOCKET_PATH,
+        config: GcodeConfig | None = None,
     ):
         self._socket_path = socket_path
         self._dp1_socket_path = dp1_socket_path
         self._classifier = IntentClassifier()
         self._audit = AuditLogger()
+        self._config = config or load_config()
         self._sock: socket.socket | None = None
 
     def start(self) -> None:
@@ -135,11 +139,14 @@ class GcodeServer:
                 })
                 return
 
-            # Step 3: safe — 构建SessionContext，转发给dp1
+            # Step 3: safe — 通过推理层执行
             ctx = self._build_session_context(request, classification)
-            self._audit.trace_event(record, f"Forwarding to dp1 with SessionContext: {ctx.to_dict()}")
+            self._audit.trace_event(record, f"Reasoning with context: {ctx.to_dict()}")
 
-            result, tool_records = self._forward_to_dp1(ctx, ctx.filtered_input, {})
+            response_text, tool_records = asyncio.run(
+                self._reason(ctx)
+            )
+
             tools_called = [r.tool_name for r in tool_records]
             request_ids = [r.audit_id for r in tool_records]
 
@@ -147,14 +154,14 @@ class GcodeServer:
                 record,
                 tools_called=tools_called,
                 request_ids=request_ids,
-                results_summary=json.dumps(result, ensure_ascii=False),
-                final_status="success" if result.get("status") != "error" else "execution_error",
+                results_summary=response_text[:500],
+                final_status="success",
                 duration_total_ms=record.duration_total_ms,
             )
 
             self._send_json(conn, {
                 "status": "success",
-                "data": result,
+                "data": {"response": response_text},
                 "audit_id": record.audit_id,
             })
 
@@ -174,8 +181,35 @@ class GcodeServer:
             user_id=user_id,
         )
 
+    async def _reason(self, ctx: SessionContext) -> tuple[str, list[ToolCallRecord]]:
+        """通过推理层执行：LLM 选择 Tool → 执行 → 返回结果。"""
+        from ..gcode.reasoning import create_reasoner
+
+        reasoner = create_reasoner(self._config)
+        response = await reasoner.reason(ctx.filtered_input, allow_write=False)
+
+        # 构建 ToolCallRecord 供审计
+        records: list[ToolCallRecord] = []
+        for tr in response.tool_results:
+            records.append(ToolCallRecord(
+                session_id=ctx.session_id,
+                tool_name=tr["tool"],
+                params={},
+                result={"output": tr["result"][:200]},
+            ))
+
+        result_text = response.text or ""
+        if response.tool_calls:
+            tool_outputs = []
+            for tr in response.tool_results:
+                tool_outputs.append(f"[{tr['tool']}]\n{tr['result']}")
+            if tool_outputs:
+                result_text = (result_text + "\n\n" if result_text else "") + "\n\n".join(tool_outputs)
+
+        return result_text or "[reasoner] 无响应", records
+
     def _forward_to_dp1(self, ctx: SessionContext, tool_name: str, params: dict) -> tuple[dict, list[ToolCallRecord]]:
-        """转发请求给dp1 MCP Server，返回 (原始响应, ToolCallRecord列表)。"""
+        """转发请求给dp1 MCP Server（保留作为回退）。"""
         try:
             dp1_sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
             dp1_sock.settimeout(30)
@@ -187,7 +221,6 @@ class GcodeServer:
             dp1_sock.close()
             response_data = json.loads(raw)
 
-            # 提取 ToolCallRecord 供审计
             records = self._extract_tool_records(response_data, ctx.session_id)
             return response_data, records
         except FileNotFoundError:

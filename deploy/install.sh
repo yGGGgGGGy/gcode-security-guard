@@ -50,13 +50,13 @@ info "Python $PYTHON_VER — 满足要求"
 # ─── 系统依赖 ──────────────────────────────────────────────────
 info "安装系统依赖..."
 if command -v dnf >/dev/null; then
-    dnf install -y python3-pip python3-venv git psutil audit 2>/dev/null || true
+    dnf install -y python3-pip python3-venv git socat audit 2>/dev/null || true
 elif command -v yum >/dev/null; then
-    yum install -y python3-pip python3-venv git psutil audit 2>/dev/null || true
+    yum install -y python3-pip python3-venv git socat audit 2>/dev/null || true
 elif command -v apt-get >/dev/null; then
-    apt-get update && apt-get install -y python3-pip python3-venv git python3-psutil auditd 2>/dev/null || true
+    apt-get update && apt-get install -y python3-pip python3-venv git socat auditd 2>/dev/null || true
 else
-    warn "未知包管理器，请手动安装: python3-pip python3-venv git"
+    warn "未知包管理器，请手动安装: python3-pip python3-venv git socat"
 fi
 
 # ─── 创建用户和目录 ────────────────────────────────────────────
@@ -66,22 +66,27 @@ if ! id "$GCODE_USER" &>/dev/null; then
 fi
 
 info "创建目录结构..."
-mkdir -p "$INSTALL_DIR" "$CONFIG_DIR" "$LOG_DIR" "$DATA_DIR" "$RUN_DIR"
-chown "$GCODE_USER:$GCODE_GROUP" "$LOG_DIR" "$DATA_DIR" "$RUN_DIR"
+mkdir -p "$INSTALL_DIR" "$CONFIG_DIR" "$LOG_DIR" "$DATA_DIR" "$RUN_DIR" "$INSTALL_DIR/models"
+chown "$GCODE_USER:$GCODE_GROUP" "$LOG_DIR" "$DATA_DIR" "$RUN_DIR" "$INSTALL_DIR/models"
 chmod 750 "$LOG_DIR" "$DATA_DIR"
 chmod 770 "$RUN_DIR"
 
 # ─── 克隆/更新代码 ─────────────────────────────────────────────
-if [[ -d "$INSTALL_DIR/gcode-security-guard/.git" ]]; then
+if [[ -d "$INSTALL_DIR/.git" ]]; then
     info "更新已有代码..."
-    cd "$INSTALL_DIR/gcode-security-guard"
+    cd "$INSTALL_DIR"
     git fetch origin "$BRANCH" && git checkout "$BRANCH" && git pull
 else
-    info "克隆代码到 $INSTALL_DIR/gcode-security-guard..."
-    git clone --branch "$BRANCH" "$REPO_URL" "$INSTALL_DIR/gcode-security-guard"
+    info "克隆代码到 $INSTALL_DIR..."
+    # 如果目录非空则备份
+    if [[ -n "$(ls -A "$INSTALL_DIR" 2>/dev/null)" ]]; then
+        mv "$INSTALL_DIR" "${INSTALL_DIR}.bak.$(date +%s)"
+        mkdir -p "$INSTALL_DIR"
+    fi
+    git clone --branch "$BRANCH" "$REPO_URL" "$INSTALL_DIR"
 fi
 
-chown -R "$GCODE_USER:$GCODE_GROUP" "$INSTALL_DIR/gcode-security-guard"
+chown -R "$GCODE_USER:$GCODE_GROUP" "$INSTALL_DIR"
 
 # ─── Python 虚拟环境 ──────────────────────────────────────────
 info "创建 Python 虚拟环境..."
@@ -89,20 +94,29 @@ python3 -m venv "$VENV_DIR"
 "$VENV_DIR/bin/pip" install --upgrade pip setuptools wheel
 
 info "安装项目依赖..."
-"$VENV_DIR/bin/pip" install -e "$INSTALL_DIR/gcode-security-guard"
+"$VENV_DIR/bin/pip" install -e "$INSTALL_DIR"
 
 # ─── 配置文件 ──────────────────────────────────────────────────
 if [[ ! -f "$CONFIG_DIR/config.yaml" ]]; then
     info "生成默认配置..."
-    cp "$INSTALL_DIR/gcode-security-guard/config.yaml" "$CONFIG_DIR/config.yaml"
+    cp "$INSTALL_DIR/config.yaml" "$CONFIG_DIR/config.yaml"
 else
     info "配置文件已存在，跳过"
+fi
+
+# ─── 环境变量 ──────────────────────────────────────────────────
+if [[ ! -f "$INSTALL_DIR/.env" ]]; then
+    info "生成环境变量配置..."
+    cp "$INSTALL_DIR/deploy/.env.example" "$INSTALL_DIR/.env"
+    sed -i "s|/opt/gcode/models|${INSTALL_DIR}/models|g" "$INSTALL_DIR/.env"
+else
+    info ".env 已存在，跳过"
 fi
 
 # ─── Qwen 模型预下载（可选）────────────────────────────────────
 if [[ "$SKIP_MODEL" == false ]]; then
     info "预下载 Qwen2.5-0.5B 模型（可能需要几分钟）..."
-    "$VENV_DIR/bin/python3" -c "
+    HF_HOME="$INSTALL_DIR/models" "$VENV_DIR/bin/python3" -c "
 from transformers import pipeline
 pipeline('zero-shot-classification', model='Qwen/Qwen2.5-0.5B', device=-1)
 print('模型下载完成')
@@ -113,8 +127,8 @@ fi
 
 # ─── systemd 服务 ──────────────────────────────────────────────
 info "安装 systemd 服务..."
-cp "$INSTALL_DIR/gcode-security-guard/deploy/gcode-security-guard.service" /etc/systemd/system/
-cp "$INSTALL_DIR/gcode-security-guard/deploy/gcode-mcp-server.service" /etc/systemd/system/
+cp "$INSTALL_DIR/deploy/gcode-security-guard.service" /etc/systemd/system/
+cp "$INSTALL_DIR/deploy/gcode-mcp-server.service" /etc/systemd/system/
 systemctl daemon-reload
 
 # ─── SELinux ───────────────────────────────────────────────────
@@ -122,7 +136,7 @@ if [[ "$SKIP_SELINUX" == false ]]; then
     if command -v getenforce &>/dev/null && [[ "$(getenforce)" != "Disabled" ]]; then
         info "配置 SELinux 策略..."
         SELINUX_DIR=$(mktemp -d)
-        cp "$INSTALL_DIR/gcode-security-guard/deploy/gcode-selinux.te" "$SELINUX_DIR/"
+        cp "$INSTALL_DIR/deploy/gcode-selinux.te" "$SELINUX_DIR/"
         cd "$SELINUX_DIR"
         checkmodule -M -m -o gcode-selinux.mod gcode-selinux.te 2>/dev/null && \
         semodule_package -o gcode-selinux.pp -m gcode-selinux.mod && \
@@ -171,9 +185,11 @@ echo ""
 echo "  安全层 (gcode-security-guard): $GUARD_STATUS"
 echo "  执行层 (gcode-mcp-server):     $MCP_STATUS"
 echo ""
-echo "  Socket:  $RUN_DIR/gcode.sock"
-echo "  配置:    $CONFIG_DIR/config.yaml"
-echo "  日志:    $LOG_DIR/"
+echo "  安装目录:  $INSTALL_DIR"
+echo "  Socket:    $RUN_DIR/gcode.sock"
+echo "  配置:      $CONFIG_DIR/config.yaml"
+echo "  环境变量:  $INSTALL_DIR/.env"
+echo "  模型缓存:  $INSTALL_DIR/models/"
 echo ""
 echo "  查看日志:  journalctl -u gcode-security-guard -f"
 echo "  查看状态:  systemctl status gcode-security-guard gcode-mcp-server"

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -41,11 +42,22 @@ class SocketConfig:
 
 
 @dataclass
+class ReasonerConfig:
+    provider: str = "ollama"
+    model: str = "qwen2.5:7b"
+    api_key: str = ""
+    base_url: str = ""
+    max_tool_rounds: int = 3
+    timeout: int = 30
+
+
+@dataclass
 class GcodeConfig:
     monitor: MonitorConfig = field(default_factory=MonitorConfig)
     alert: AlertConfig = field(default_factory=AlertConfig)
     logpipe: LogpipeConfig = field(default_factory=LogpipeConfig)
     socket: SocketConfig = field(default_factory=SocketConfig)
+    reasoner: ReasonerConfig = field(default_factory=ReasonerConfig)
 
 
 def load_config(path: str | Path | None = None) -> GcodeConfig:
@@ -81,5 +93,17 @@ def load_config(path: str | Path | None = None) -> GcodeConfig:
         s = raw["socket"]
         cfg.socket.m1_path = s.get("m1_path", cfg.socket.m1_path)
         cfg.socket.dp1_path = s.get("dp1_path", cfg.socket.dp1_path)
+
+    if "reasoner" in raw:
+        r = raw["reasoner"]
+        cfg.reasoner.provider = r.get("provider", cfg.reasoner.provider)
+        cfg.reasoner.model = r.get("model", cfg.reasoner.model)
+        cfg.reasoner.api_key = r.get("api_key", cfg.reasoner.api_key)
+        cfg.reasoner.base_url = r.get("base_url", cfg.reasoner.base_url)
+        cfg.reasoner.max_tool_rounds = r.get("max_tool_rounds", cfg.reasoner.max_tool_rounds)
+        cfg.reasoner.timeout = r.get("timeout", cfg.reasoner.timeout)
+
+    # API key 环境变量覆盖（密钥不应写入 YAML）
+    cfg.reasoner.api_key = os.environ.get("GCODE_REASONER_API_KEY", cfg.reasoner.api_key)
 
     return cfg
