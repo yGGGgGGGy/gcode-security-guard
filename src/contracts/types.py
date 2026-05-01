@@ -18,6 +18,17 @@ RiskLevel = Literal["read_only", "read_write", "admin"]
 
 
 @dataclass
+class ToolResult:
+    """Tool 执行结果，由 dp1 MCP Server 返回。"""
+
+    success: bool
+    data: dict[str, Any] | None = None
+    audit_id: str = ""
+    error: str | None = None
+    needs_confirmation: bool = False
+
+
+@dataclass
 class SessionContext:
     """m1 → dp1: 意图过滤后构建的安全上下文。
 
@@ -58,6 +69,7 @@ class ToolCallRecord:
     audit_id: str = field(default_factory=lambda: str(uuid.uuid4()))
     session_id: str = ""
     step_id: str = ""
+    parent_step_id: str | None = None
     tool_name: str = ""
     params: dict[str, Any] = field(default_factory=dict)
     result: dict[str, Any] = field(default_factory=dict)
@@ -72,6 +84,7 @@ class ToolCallRecord:
             audit_id=data.get("audit_id", str(uuid.uuid4())),
             session_id=data.get("session_id", ""),
             step_id=data.get("step_id", ""),
+            parent_step_id=data.get("parent_step_id"),
             tool_name=data.get("tool_name", ""),
             params=data.get("params", {}),
             result=data.get("result", {}),
