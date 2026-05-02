@@ -1,6 +1,6 @@
 # Gcode Security Guard
 
-**麒麟OS 智能运维 Agent** — 对话式自然语言运维，三层安全护栏，一键部署。
+**麒麟OS 智能运维 Agent** — 用自然语言管理服务器。三层安全护栏，一键部署。
 
 ```
 用户自然语言 → Intent Filter(Qwen2.5) → LLM Reasoner(多模型) → MCP Server(12 Tool) → Audit(SQLite全量)
@@ -8,12 +8,13 @@
 
 ## 目录
 
-- [三层安全架构](#三层安全架构)
-- [环境要求](#环境要求)
+- [快速开始](#快速开始)
 - [一键部署](#一键部署)
-- [快速开始（开发模式）](#快速开始开发模式)
+- [使用方式](#使用方式)
+- [三层安全架构](#三层安全架构)
 - [项目架构](#项目架构)
 - [模块说明](#模块说明)
+- [高级用法（命令行参考）](#高级用法命令行参考)
 - [API 接口](#api-接口)
 - [配置参考](#配置参考)
 - [启动与管理](#启动与管理)
@@ -21,110 +22,24 @@
 - [项目结构](#项目结构)
 - [故障排查](#故障排查)
 
-## 三层安全架构
+## 快速开始
 
-| 层级 | 位置 | 技术 | 说明 |
-|------|------|------|------|
-| 意图过滤（入口） | m1 `intent/` | Qwen2.5-0.5B 13标签零样本分类 | safe / unsafe / needs-review 三层判定 |
-| 最小权限（出口） | dp1 `mcp/` | 参数校验 + 注入防御 + dry-run + seccomp | Tool 分级（read_only / read_write / admin） |
-| 思维链审计（全链路） | m1 `audit/` | SQLite 全量记录 + 异常检测 | 事后回溯，按用户/会话检索，DAG 回放 |
-
-## 环境要求
-
-| 依赖 | 最低版本 | 说明 |
-|------|---------|------|
-| Python | 3.11+ | venv 隔离安装 |
-| 操作系统 | 麒麟OS / CentOS 8+ / Ubuntu 22.04+ | systemd + SELinux 支持 |
-| 内存 | 2 GB | 含 Qwen2.5-0.5B (约 1GB) |
-| 磁盘 | 2 GB | 代码 + 模型 + SQLite |
-| 可选 | psutil, auditd, podman | 性能采集、系统审计、容器沙箱 |
-
-系统依赖：
-
-```bash
-# 麒麟OS / CentOS
-sudo dnf install -y python3-pip python3-venv git socat audit
-
-# Ubuntu
-sudo apt-get install -y python3-pip python3-venv git socat auditd
-```
-
-## 一键部署
-
-```bash
-# 1. 克隆代码
-git clone https://github.com/yGGGgGGGy/gcode-security-guard.git
-cd gcode-security-guard
-
-# 2. 一键安装（需要 root）
-sudo bash deploy/install.sh
-
-# 3. 可选参数
-sudo bash deploy/install.sh --skip-model      # 跳过模型下载（启动时自动下载）
-sudo bash deploy/install.sh --skip-selinux    # 跳过 SELinux 配置
-```
-
-安装脚本自动完成：
-- 检查 Python 3.11+ + 系统依赖（自动识别 dnf/yum/apt）
-- 创建 `gcode` 系统用户
-- 克隆代码到 `/opt/gcode/` + 创建 Python venv
-- 配置 `/etc/gcode/config.yaml` + `/opt/gcode/.env`
-- 预下载 Qwen2.5-0.5B 模型（可 `--skip-model`）
-- 安装 systemd 双服务
-- 配置 SELinux 策略 + auditd 审计规则
-- 启动双服务 + 输出验证结果
-
-部署完成后目录：
-
-```
-/opt/gcode/                          # 安装目录
-├── venv/                            # Python 虚拟环境 + 所有依赖
-├── src/                             # 所有模块源码
-├── .env                             # 环境变量（socket 路径、模型缓存等）
-└── models/                          # HuggingFace 模型缓存
-
-/etc/systemd/system/
-├── gcode-security-guard.service     # m1 安全层
-└── gcode-mcp-server.service         # dp1 执行层
-
-/etc/gcode/config.yaml               # 主配置文件
-
-/run/gcode/                          # Unix Socket（运行时）
-├── gcode.sock                        # 安全层监听
-└── gcode-dp1.sock                    # 执行层监听
-```
-
-验证部署：
-
-```bash
-# 检查服务状态
-sudo systemctl status gcode-security-guard gcode-mcp-server
-
-# 查看实时日志
-sudo journalctl -u gcode-security-guard -f
-
-# 测试 API
-echo '{"query":"查看磁盘使用"}' | socat - UNIX-CONNECT:/run/gcode/gcode.sock
-```
-
-## 快速开始（开发模式）
-
-不部署 systemd，直接开发使用。**核心概念：直接用自然语言说话，不需要记命令。**
+**不需要记命令。直接说话。**
 
 ```bash
 git clone https://github.com/yGGGgGGGy/gcode-security-guard.git
 cd gcode-security-guard
 pip install -e .
 
-# 交互式对话（推荐日常使用）
+# 交互式对话
 gcode
 # > gcode> 检查服务器状态
 # > gcode> 磁盘满了怎么办？
 # > gcode> 重启 nginx 会影响什么？
 
-# 单次自然语言查询（适合脚本/管道）
-gcode "系统内存还剩多少？"
-gcode "CPU 使用率怎么样？"
+# 一句话查询
+gcode "内存还剩多少？"
+gcode "帮我看看 CPU 温度正常吗"
 
 # 本地模型（Ollama，无需 API key）
 ollama pull qwen2.5:7b
@@ -133,15 +48,94 @@ gcode
 
 # 云端模型
 export GCODE_REASONER_API_KEY="sk-xxx"
-gcode
-
-# 高级用户：运维命令
-gcode check              # 健康检查
-gcode report --type daily  # 日报
-gcode run runbook.yaml   # 执行 Runbook
+gcode "最近有哪些异常日志？"
 ```
 
-> **就是说：** 日常直接用 `gcode` / `gcode "..."` 自然语言交互。`gcode check` / `gcode logpipe` 等子命令是给脚本和高级用户用的。
+> **核心设计：** `gcode` 无参数 = 交互式对话，`gcode "自然语言"` = 一句话查询。  
+> 日常运维不需要记任何子命令。
+
+## 一键部署
+
+```bash
+git clone https://github.com/yGGGgGGGy/gcode-security-guard.git
+cd gcode-security-guard
+sudo bash deploy/install.sh                   # 完整安装（含模型 + SELinux）
+sudo bash deploy/install.sh --skip-model      # 跳过模型下载
+sudo bash deploy/install.sh --skip-selinux    # 跳过 SELinux 配置
+```
+
+安装脚本自动完成：系统依赖 → 创建 gcode 用户 → 克隆代码 → Python venv → 模型下载 → systemd 服务 → SELinux 策略 → auditd 规则 → 启动验证。
+
+部署后目录：
+
+```
+/opt/gcode/                          # 安装目录
+├── venv/                            # Python 虚拟环境
+├── src/                             # 源码
+├── .env                             # 环境变量
+└── models/                          # 模型缓存
+
+/etc/systemd/system/
+├── gcode-security-guard.service     # m1 安全层
+└── gcode-mcp-server.service         # dp1 执行层
+
+/run/gcode/                          # Unix Socket
+├── gcode.sock                        # 安全层
+└── gcode-dp1.sock                    # 执行层
+```
+
+部署后使用：
+
+```bash
+# 自然语言查询（通过 Unix Socket）
+echo '{"query":"查看磁盘使用"}' | socat - UNIX-CONNECT:/run/gcode/gcode.sock
+
+# 自然语言查询（如果装了 CLI）
+gcode "检查服务状态"
+
+# 查看服务日志
+journalctl -u gcode-security-guard -f
+
+# 确认服务状态
+systemctl status gcode-security-guard gcode-mcp-server
+
+# 下一步：配置 LLM API key
+sudo vi /opt/gcode/.env   # 填入 GCODE_REASONER_API_KEY
+```
+
+## 使用方式
+
+### 日常模式（自然语言）
+
+```
+gcode                          →  进入交互对话
+gcode "检查服务器状态"           →  一句话查询
+gcode "nginx 重启安全吗？"      →  自动调用工具分析
+```
+
+### 生产模式（Unix Socket API）
+
+```bash
+echo '{"query":"查看磁盘使用"}' | socat - UNIX-CONNECT:/run/gcode/gcode.sock
+echo '{"query":"重启 nginx","user_id":"ops-01","session_id":"s-001"}' | \
+  socat - UNIX-CONNECT:/run/gcode/gcode.sock
+```
+
+### Python API
+
+```python
+from gcode.core.session import SessionManager
+s = SessionManager()
+print(s.ask("CPU 使用率如何？"))
+```
+
+## 三层安全架构
+
+| 层级 | 位置 | 技术 | 说明 |
+|------|------|------|------|
+| 意图过滤（入口） | m1 `intent/` | Qwen2.5-0.5B 13标签零样本分类 | safe / unsafe / needs-review 三层判定 |
+| 最小权限（出口） | dp1 `mcp/` | 参数校验 + 注入防御 + dry-run + seccomp | Tool 分级（read_only / read_write / admin） |
+| 思维链审计（全链路） | m1 `audit/` | SQLite 全量记录 + 异常检测 | 事后回溯，按用户/会话检索，DAG 回放 |
 
 ## 项目架构
 
@@ -167,7 +161,6 @@ gcode run runbook.yaml   # 执行 Runbook
 │  └───────────────────────────┘│                          │
 └───────────────────────────────┼──────────────────────────┘
                                 │ Unix Domain Socket
-                                │ SessionContext {risk_score, capability_set}
                                 ▼
 ┌─────────────────────────────────────────────────────────┐
 │              dp1: MCP Server (执行层)                     │
@@ -198,19 +191,14 @@ gcode run runbook.yaml   # 执行 Runbook
 2. Reasoner → LLM 返回 tool_calls: [service_status("nginx"), ps_list()]
 3. MCP Executor → systemctl status nginx + ps aux
 4. LLM 汇总 → "nginx 运行正常，PID 1234，监听 80/443。重启会短暂中断连接。"
-5. AuditLogger → SQLite 全量记录（query, intent, tools, result, duration）
+5. AuditLogger → SQLite 全量记录
 ```
 
 ## 模块说明
 
 ### core — Runbook 引擎 + 会话管理
 
-```bash
-gcode                          # 交互式 REPL（默认）
-gcode "内存还剩多少？"           # 单次自然语言查询
-gcode run runbook.yaml          # 执行 Runbook（支持重试、回滚）
-gcode run runbook.yaml --dry-run  # 预览不执行
-```
+自然语言查询的入口，自动路由到对应模块（监控/告警/日志）。
 
 | 文件 | 功能 |
 |------|------|
@@ -233,10 +221,6 @@ steps:
 
 ### monitor — 健康检查引擎
 
-```bash
-gcode check              # 运行默认检查（磁盘、内存、TCP）
-```
-
 | 文件 | 功能 |
 |------|------|
 | `checkers.py` | HTTP / TCP / 进程 / 磁盘 / 内存 健康检查 |
@@ -245,15 +229,6 @@ gcode check              # 运行默认检查（磁盘、内存、TCP）
 
 ### alert — 告警引擎
 
-```bash
-gcode alert list                   # 查看活跃告警
-gcode alert ack <alert-id>         # 确认告警
-gcode alert resolve <alert-id>     # 解决告警
-gcode alert-config add-rule --name cpu-high --condition "cpu>90"
-gcode alert-config list-rules
-gcode alert-config events --active
-```
-
 | 文件 | 功能 |
 |------|------|
 | `engine.py` | Alert 创建/确认/解决，JSON 文件持久化 |
@@ -261,15 +236,6 @@ gcode alert-config events --active
 | `notifier.py` | stdout / webhook 多渠道通知 |
 
 ### logpipe — 日志管道
-
-```bash
-gcode logpipe entries --level ERROR --keyword oom
-gcode logpipe stats                     # 日志统计
-gcode logpipe anomalies --threshold 10  # 异常检测（模式简化 + 重复阈值）
-gcode logpipe add-source --name syslog --type file --path /var/log/syslog
-gcode logpipe collect                   # 增量采集
-gcode logpipe scan --limit 500          # 规则扫描
-```
 
 | 文件 | 功能 |
 |------|------|
@@ -296,18 +262,14 @@ from gcode.reasoning.providers.anthropic import AnthropicProvider
 provider = AnthropicProvider(api_key="sk-ant-...", model="claude-sonnet-4-20250514")
 reasoner = Reasoner(provider)
 response = await reasoner.reason("磁盘满了怎么办？")
-print(response.text)  # LLM 汇总后的自然语言回答
+print(response.text)
 ```
 
 API key 通过环境变量注入：`export GCODE_REASONER_API_KEY="sk-xxx"`
 
 ### report — 报告生成
 
-```bash
-gcode report --type daily                    # 日报
-gcode report --type weekly -o weekly.md      # 周报（输出到文件）
-gcode report --type incident                 # 故障报告（聚合 monitor+alert+logpipe）
-```
+聚合 monitor/alert/logpipe 数据，生成 daily/weekly/incident 报告。
 
 ### mcp — MCP Server（dp1 执行层）
 
@@ -330,22 +292,50 @@ gcode report --type incident                 # 故障报告（聚合 monitor+ale
 
 管理类 Tool 安全措施：参数注入防御、dry-run 确认、30s 超时限制。
 
+## 高级用法（命令行参考）
+
+日常不需要记这些。用自然语言就够了。子命令给脚本、自动化、高级用户用的。
+
+### 运维检查
+
+```bash
+gcode check                                  # 健康检查（磁盘/内存/TCP）
+gcode report --type daily                    # 日报
+gcode report --type weekly -o weekly.md      # 周报
+gcode report --type incident                 # 故障报告
+```
+
+### Runbook 执行
+
+```bash
+gcode run runbook.yaml                       # 执行
+gcode run runbook.yaml --dry-run             # 预览不执行
+```
+
+### 告警管理
+
+```bash
+gcode alert list                             # 活跃告警
+gcode alert ack <alert-id>                   # 确认
+gcode alert resolve <alert-id>               # 解决
+gcode alert-config add-rule --name cpu-high --condition "cpu>90"
+gcode alert-config list-rules
+gcode alert-config events --active
+```
+
+### 日志管道
+
+```bash
+gcode logpipe entries --level ERROR --keyword oom
+gcode logpipe stats                          # 日志统计
+gcode logpipe anomalies --threshold 10       # 异常检测
+gcode logpipe add-source --name syslog --type file --path /var/log/syslog
+gcode logpipe scan --limit 500               # 规则扫描
+```
+
 ## API 接口
 
 ### 1. Unix Socket API（生产环境）
-
-```bash
-# 启动
-python -m src.api.server     # 监听 /run/gcode/gcode.sock
-
-# 查询
-echo '{"query":"查看磁盘使用","user_id":"ops-01"}' | \
-  socat - UNIX-CONNECT:/run/gcode/gcode.sock
-
-# 带会话
-echo '{"query":"nginx 状态","user_id":"ops-01","session_id":"sess-001"}' | \
-  socat - UNIX-CONNECT:/run/gcode/gcode.sock
-```
 
 **请求格式**：
 
@@ -358,13 +348,8 @@ echo '{"query":"nginx 状态","user_id":"ops-01","session_id":"sess-001"}' | \
 **响应**：
 
 ```json
-// 成功（safe）
 {"status": "success", "data": {...}, "audit_id": "audit-xxx"}
-
-// 拒绝（unsafe）
 {"status": "rejected", "reason": "Intent classified as unsafe", "detail": "unsafe_file_delete"}
-
-// 需审核（needs-review）
 {"status": "needs_review", "reason": "Query requires human review"}
 ```
 
@@ -380,22 +365,18 @@ echo '{"query":"nginx 状态","user_id":"ops-01","session_id":"sess-001"}' | \
 ### 2. MCP 协议（stdio 模式）
 
 ```bash
-# 列出所有 Tool（绕过安全层，仅测试用）
 echo '{"jsonrpc":"2.0","method":"tools/list","id":1}' | python -m gcode.mcp.server
 ```
 
 ### 3. Python API
 
 ```python
-# 会话模式
 from gcode.core.session import SessionManager
 s = SessionManager()
 print(s.ask("CPU 使用率如何？"))
 
-# LLM 推理模式
 from gcode.reasoning.reasoner import Reasoner
 from gcode.reasoning.providers.openai_compat import create_deepseek_provider
-
 provider = create_deepseek_provider(api_key="sk-...")
 reasoner = Reasoner(provider)
 response = await reasoner.reason("磁盘满了怎么办？")
@@ -406,62 +387,62 @@ response = await reasoner.reason("磁盘满了怎么办？")
 `/etc/gcode/config.yaml`（部署）或 `config.yaml`（开发）：
 
 ```yaml
-# ── 推理层 ──
 reasoner:
   provider: deepseek          # ollama | deepseek | qwen | claude
   model: deepseek-chat
-  max_tool_rounds: 3
-  timeout: 30
 
-# ── 意图过滤 ──
 intent:
   model: Qwen/Qwen2.5-0.5B
   safe_threshold: 0.6
-  needs_review_threshold: 0.4
 
-# ── 监控 ──
 monitor:
   checks:
-    - type: http
-      name: "app-health"
-      host: "localhost"
-      port: 8080
     - type: disk
       name: "root-usage"
       threshold: 85
   interval_sec: 60
 
-# ── 告警 ──
 alert:
   notifiers:
-    - type: stdout
     - type: webhook
       url: "https://hooks.example.com/alert"
   rules:
     - name: cpu-high
       condition: "cpu > 90"
       severity: error
-      cooldown_min: 5
 
-# ── 日志 ──
 logpipe:
   sources:
     - name: syslog
       type: file
       path: /var/log/messages
-  rules:
-    - name: oom
-      pattern: "Out of memory"
-      severity: error
+```
+## 系统要求
+
+| 依赖 | 最低版本 | 说明 |
+|------|---------|------|
+| Python | 3.11+ | venv 隔离安装 |
+| 操作系统 | 麒麟OS / CentOS 8+ / Ubuntu 22.04+ | systemd + SELinux 支持 |
+| 内存 | 2 GB | 含 Qwen2.5-0.5B (约 1GB) |
+| 磁盘 | 2 GB | 代码 + 模型 + SQLite |
+| 可选 | psutil, auditd, podman | 性能采集、系统审计、容器沙箱 |
+
+系统依赖：
+
+```bash
+# 麒麟OS / CentOS
+sudo dnf install -y python3-pip python3-venv git socat audit
+
+# Ubuntu
+sudo apt-get install -y python3-pip python3-venv git socat auditd
 ```
 
 ## 启动与管理
 
 ```bash
 # 开发调试
-gcode                               # 交互式 REPL（默认）
-gcode "磁盘使用情况"                  # 单次自然语言查询
-gcode check                         # 健康检查
+gcode                          # 交互式 REPL
+gcode "磁盘使用情况"             # 单次查询
 
 # systemd 生产模式
 sudo systemctl start gcode-security-guard gcode-mcp-server
@@ -471,10 +452,7 @@ sudo systemctl enable --now gcode-security-guard gcode-mcp-server
 sudo systemctl status gcode-security-guard gcode-mcp-server
 sudo journalctl -u gcode-security-guard -f
 sudo journalctl -u gcode-mcp-server -f
-
-# 重启/停止
 sudo systemctl restart gcode-security-guard gcode-mcp-server
-sudo systemctl stop gcode-security-guard gcode-mcp-server
 ```
 
 ## 测试
@@ -557,7 +535,6 @@ gcode-security-guard/
 | 模型下载失败 | HuggingFace 不可达 | `export HF_ENDPOINT=https://hf-mirror.com` |
 | `ModuleNotFoundError: gcode` | 未安装为 editable | `pip install -e .` |
 | SELinux 阻止 socket 创建 | AVC denial | `sudo semodule -i deploy/gcode-selinux.pp` |
-| 执行层无权限 restart | 缺少 capability | 检查 service 文件的 `CapabilityBoundingSet` |
 
 ## 配对仓库
 
