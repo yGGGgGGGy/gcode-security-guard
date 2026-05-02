@@ -192,6 +192,11 @@ AUDIT
     augenrules --load 2>/dev/null || warn "auditd 规则加载失败"
 fi
 
+# 链接 CLI 到系统 PATH
+info "链接 gcode 命令到 /usr/local/bin..."
+ln -sf "$VENV_DIR/bin/gcode" /usr/local/bin/gcode 2>/dev/null || \
+    warn "无法创建全局 gcode 命令，请使用: $VENV_DIR/bin/gcode"
+
 # ─── 启用服务 ──────────────────────────────────────────────────
 info "启动服务..."
 # 先启动 MCP Server（安全层依赖它）
@@ -228,8 +233,15 @@ echo "  配置:      $CONFIG_DIR/config.yaml"
 echo "  环境变量:  $INSTALL_DIR/.env"
 echo "  模型缓存:  $INSTALL_DIR/models/"
 echo ""
-echo "  自然语言测试:"
-echo "    echo '{\"query\":\"查看磁盘使用\"}' | socat - UNIX-CONNECT:$RUN_DIR/gcode.sock"
+echo "  自然语言使用:"
+echo "    gcode                         # 进入交互式对话"
+echo "    gcode \"检查服务器状态\"          # 单次自然语言查询"
+echo "    gcode \"nginx 最近有没有报错？\"  # 自动调用运维工具"
+echo ""
+echo "  高级命令:"
+echo "    gcode check                   # 健康检查"
+echo "    gcode report --type daily     # 日报"
+echo "    gcode run runbook.yaml        # 执行 Runbook"
 echo ""
 echo "  下一步: 编辑 $INSTALL_DIR/.env 配置 LLM API key"
 echo ""
