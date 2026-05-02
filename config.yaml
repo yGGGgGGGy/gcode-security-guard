@@ -64,3 +64,14 @@ intent:
   model: Qwen/Qwen2.5-0.5B
   safe_threshold: 0.6
   needs_review_threshold: 0.4
+
+# Reasoning layer (LLM tool calling)
+# Provider: ollama (local), qwen, deepseek, claude
+# API key: set via GCODE_REASONER_API_KEY env var for cloud providers
+reasoner:
+  provider: ollama
+  model: qwen2.5:7b
+  api_key: ""
+  base_url: ""
+  max_tool_rounds: 3
+  timeout: 30
