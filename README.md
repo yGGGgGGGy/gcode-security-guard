@@ -109,25 +109,39 @@ echo '{"query":"查看磁盘使用"}' | socat - UNIX-CONNECT:/run/gcode/gcode.so
 
 ## 快速开始（开发模式）
 
-不部署 systemd，直接开发使用：
+不部署 systemd，直接开发使用。**核心概念：直接用自然语言说话，不需要记命令。**
 
 ```bash
 git clone https://github.com/yGGGgGGGy/gcode-security-guard.git
 cd gcode-security-guard
 pip install -e .
 
+# 交互式对话（推荐日常使用）
+gcode
+# > gcode> 检查服务器状态
+# > gcode> 磁盘满了怎么办？
+# > gcode> 重启 nginx 会影响什么？
+
+# 单次自然语言查询（适合脚本/管道）
+gcode "系统内存还剩多少？"
+gcode "CPU 使用率怎么样？"
+
 # 本地模型（Ollama，无需 API key）
 ollama pull qwen2.5:7b
-gcode ask "系统内存还剩多少？"
+export GCODE_REASONER_API_KEY="ollama"
+gcode
 
 # 云端模型
 export GCODE_REASONER_API_KEY="sk-xxx"
-gcode ask "CPU 使用率怎么样？"
+gcode
 
-# 交互式 REPL
-gcode serve
-gcode check
+# 高级用户：运维命令
+gcode check              # 健康检查
+gcode report --type daily  # 日报
+gcode run runbook.yaml   # 执行 Runbook
 ```
+
+> **就是说：** 日常直接用 `gcode` / `gcode "..."` 自然语言交互。`gcode check` / `gcode logpipe` 等子命令是给脚本和高级用户用的。
 
 ## 项目架构
 
@@ -192,10 +206,10 @@ gcode check
 ### core — Runbook 引擎 + 会话管理
 
 ```bash
-gcode serve                                    # 交互式 REPL（监控/告警/日志查询）
-gcode ask "内存还剩多少？"                       # 单次查询，自动路由到对应模块
-gcode run runbook.yaml                          # 执行 Runbook（支持重试、回滚）
-gcode run runbook.yaml --dry-run                # 预览不执行
+gcode                          # 交互式 REPL（默认）
+gcode "内存还剩多少？"           # 单次自然语言查询
+gcode run runbook.yaml          # 执行 Runbook（支持重试、回滚）
+gcode run runbook.yaml --dry-run  # 预览不执行
 ```
 
 | 文件 | 功能 |
@@ -445,9 +459,9 @@ logpipe:
 
 ```bash
 # 开发调试
-python -m gcode.cli.main serve                  # CLI REPL 模式
-python -m gcode.cli.main check                  # 健康检查
-python -m gcode.cli.main ask "磁盘使用情况"       # 单次查询
+gcode                               # 交互式 REPL（默认）
+gcode "磁盘使用情况"                  # 单次自然语言查询
+gcode check                         # 健康检查
 
 # systemd 生产模式
 sudo systemctl start gcode-security-guard gcode-mcp-server
