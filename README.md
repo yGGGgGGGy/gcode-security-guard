@@ -1,278 +1,318 @@
-# Gcode Security Guard — 麒麟OS 智能运维 Agent
+# Gcode Security Guard
 
-**对话式运维，杜绝误操作。** 通过自然语言查询系统状态、排查故障、执行运维操作。
+麒麟OS 智能运维 Agent — 对话式运维 + 三层安全护栏 + 一键部署。
 
-三层安全护栏：意图过滤 → 最小权限 → 全链路审计。
+```
+User → API(Unix Socket) → Intent Filter(Qwen2.5) → Agent(Runbook/Monitor/Logpipe) → Audit(SQLite)
+```
+
+## 三层安全架构
+
+| 层级 | 位置 | 技术 | 说明 |
+|---|---|---|---|
+| 意图过滤（入口） | m1 | Qwen2.5-0.5B 零样本分类 | safe / unsafe / needs-review 三层判定 |
+| 最小权限（出口） | dp1 | SessionContext.capability_set | read_only / read_write / admin |
+| 思维链审计（全链路） | m1 | SQLite 全量记录 | 事后回溯，按用户/会话检索 |
 
 ## 环境要求
 
-| 项 | 最低要求 | 推荐 |
-|---|---------|------|
-| 操作系统 | 麒麟OS / Linux 4.19+ | 麒麟OS V10 SP2+ |
-| Python | 3.11+ | 3.12 |
-| 内存 | 4 GB | 8 GB（含本地模型） |
-| 磁盘 | 2 GB | 10 GB（含审计数据） |
-| 可选 | podman | 用于沙箱隔离 |
+| 依赖 | 最低版本 | 说明 |
+|---|---|---|
+| Python | 3.11+ | venv 隔离安装 |
+| 操作系统 | 麒麟OS / CentOS 8+ / Ubuntu 22.04+ | systemd + SELinux 支持 |
+| Git | 2.30+ | 克隆代码 |
+| pip | 23.0+ | 包管理 |
+| 磁盘空间 | ~2GB | 含 Qwen2.5-0.5B 模型 (~1GB) |
+| 可选 | psutil, auditd, SELinux | 性能采集、审计、安全加固 |
 
-## 快速开始（新手向）
-
-如果你只想要跑起来，3 步：
-
-```bash
-# 1. 安装依赖
-pip install -e "gcode-security-guard[reasoner-openai]"
-
-# 2. 确保 Ollama 在运行（本地模型，无需 API key）
-ollama pull qwen2.5:7b   # 首次需下载，约 4GB
-
-# 3. 启动 CLI 对话
-gcode ask "查看系统内存使用情况"
-```
-
-如果 Ollama 不可用，用云端模型：
+## 一键部署
 
 ```bash
-export GCODE_REASONER_API_KEY="你的API密钥"
-# 编辑 config.yaml，把 reasoner.provider 改为 deepseek 或 qwen
-gcode ask "查看 CPU 使用率"
-```
-
-预期输出：LLM 自动调用 `mem_usage` 或 `cpu_usage` tool，返回 JSON 格式的指标数据。
-
-## 一键部署（systemd）
-
-```bash
+# 1. 克隆代码
 git clone https://github.com/yGGGgGGGy/gcode-security-guard.git
 cd gcode-security-guard
-sudo bash deploy/setup.sh
-sudo systemctl start gcode-security-guard gcode-mcp-server
-sudo systemctl enable gcode-security-guard gcode-mcp-server
+
+# 2. 一键安装（需要 root）
+sudo bash deploy/install.sh
+
+# 3. 可选参数
+sudo bash deploy/install.sh --skip-model      # 跳过模型下载
+sudo bash deploy/install.sh --skip-selinux    # 跳过 SELinux 配置
 ```
 
-部署完成后，通过 Unix Socket 访问：
+安装脚本自动完成：
+- 检查 Python 3.11+
+- 安装系统依赖（自动识别 dnf/yum/apt）
+- 创建 gcode 系统用户
+- 克隆代码 + 创建 Python 虚拟环境
+- 预下载 Qwen2.5-0.5B 模型
+- 安装 systemd 服务
+- 配置 SELinux 策略 + auditd 规则
+- 启动双服务
+
+## 手动安装
 
 ```bash
-echo '{"query":"查看内存","user_id":"admin","session_id":"test-001"}' \
-  | nc -U /run/gcode/gcode.sock
+# 创建虚拟环境
+python3 -m venv /opt/gcode/venv
+/opt/gcode/venv/bin/pip install -e .
+
+# 初始化配置
+mkdir -p /etc/gcode /var/log/gcode /var/lib/gcode /run/gcode
+cp config.yaml /etc/gcode/config.yaml
+
+# 手动启动（调试用）
+/opt/gcode/venv/bin/python -m gcode.cli.main serve
 ```
 
-## 架构详解
+## 项目架构
 
 ```
-用户输入（自然语言 / CLI / Socket）
-          │
-          ▼
-┌─────────────────────────────────────────────────┐
-│                  Gcode Security Guard (m1)       │
-│                                                  │
-│  ① 意图过滤层 (intent/)                          │
-│     └ Qwen2.5-0.5B 零样本分类                      │
-│       13 标签判定：safe / unsafe / needs-review       │
-│                                                  │
-│  ② 推理层 (gcode/reasoning/)                     │
-│     └ 多模型 LLM 路由                              │
-│       ├ ollama → 本地 qwen2.5:7b                  │
-│       ├ deepseek → DeepSeek API                   │
-│       ├ qwen → Qwen API（阿里云）                   │
-│       └ claude → Anthropic Claude API             │
-│     └ Tool Calling：自动选择 12 个运维 Tool          │
-│                                                  │
-│  ③ 审计层 (audit/)                               │
-│     └ SQLite 全量记录                             │
-│       每次操作：谁、什么时候、做了什么、结果如何         │
-└────────────────────┬────────────────────────────┘
-                     │ Unix Domain Socket
-                     │ SessionContext {risk_score, capability_set, ...}
-                     ▼
-┌─────────────────────────────────────────────────┐
-│                  Gcode MCP Server (dp1)          │
-│                                                  │
-│  ④ Tool 执行层 (gcode/mcp/)                      │
-│     ├ 只读工具 (5): sys_info, ps, df, net, log   │
-│     ├ 指标工具 (4): cpu, mem, io, disk           │
-│     └ 管理工具 (3): svc_status/restart, pkg       │
-│                                                  │
-│  ⑤ 执行沙箱 (executor + sandbox)                  │
-│     └ seccomp 白名单                             │
-│     └ 资源限制（CPU 30s / 内存 512MB）              │
-│     └ 高危命令正则拦截                              │
-│     └ 敏感路径告警                                 │
-└────────────────────┬────────────────────────────┘
-                     │
-                     ▼
-              麒麟OS（systemd / rpm / journalctl / ...）
+┌─────────────────────────────────────────────────────────┐
+│                     客户端 (CLI / API)                    │
+└─────────────────┬───────────────────────────────────────┘
+                  │  Unix Domain Socket
+                  ▼
+┌─────────────────────────────────────────────────────────┐
+│              m1: Security Guard (安全层)                  │
+│  ┌──────────┐  ┌──────────┐  ┌───────────────────────┐  │
+│  │ Intent   │  │ Session  │  │ Audit Logger          │  │
+│  │ Filter   │──│ Manager  │──│ (SQLite 全量记录)      │  │
+│  │ Qwen2.5  │  │          │  │                       │  │
+│  └──────────┘  └──────────┘  └───────────────────────┘  │
+└─────────────────┬───────────────────────────────────────┘
+                  │  Unix Domain Socket
+                  ▼
+┌─────────────────────────────────────────────────────────┐
+│              dp1: MCP Server (执行层)                     │
+│  ┌──────────┐  ┌──────────┐  ┌──────────────────────┐  │
+│  │ 12 Tools │  │ Sandbox  │  │ Capability Control   │  │
+│  │ (RO/RW)  │  │ (proc)   │  │ (read_only/write)    │  │
+│  └──────────┘  └──────────┘  └──────────────────────┘  │
+└─────────────────────────────────────────────────────────┘
+                  │
+                  ▼
+┌─────────────────────────────────────────────────────────┐
+│              Gcode Agent CLI (运维工具层)                  │
+│  ┌──────┐ ┌──────┐ ┌──────┐ ┌────────┐ ┌──────────┐   │
+│  │Core  │ │Monitor│ │Alert │ │Logpipe │ │ Report   │   │
+│  │Runbook│ │Health │ │Notify│ │Collect │ │ Daily/   │   │
+│  │Session│ │Check  │ │Route │ │Detect  │ │ Weekly   │   │
+│  └──────┘ └──────┘ └──────┘ └────────┘ └──────────┘   │
+└─────────────────────────────────────────────────────────┘
 ```
 
-### 数据流
+## 模块说明
 
-1. 用户输入 → 意图分类器判定 safe/unsafe/needs-review
-2. safe → 推理层根据 tool 描述选择合适 tool
-3. LLM 返回 tool_call → executor 执行（含安全门禁）
-4. 结果回传 → LLM 汇总成自然语言回答
-5. 全链路审计写入 SQLite
+### core — Runbook 引擎 + 会话管理
+
+```bash
+gcode serve              # 交互式 REPL
+gcode ask "内存使用"      # 单次查询，自动路由到模块
+gcode run runbook.yaml   # 执行 Runbook（支持重试、回滚）
+```
+
+- `engine.py`: YAML 解析、步骤执行、失败重试、自动回滚
+- `session.py`: 交互式对话、SQLite 持久化、LLM推理 + 关键词兜底
+- `config.py`: 统一配置加载（YAML + 默认值），`GcodeConfig` 数据类
+
+Runbook 格式：
+```yaml
+steps:
+  - name: check disk
+    command: df -h
+    timeout: 10
+    retry: 2
+  - name: restart nginx
+    command: systemctl restart nginx
+    rollback: systemctl start nginx
+```
+
+### monitor — 健康检查引擎
+
+```bash
+gcode check              # 运行默认检查（磁盘、内存、TCP）
+```
+
+- `checkers.py`: HTTP / TCP / 进程 / 磁盘 / 内存 检查
+- `evaluator.py`: 检查套件 + 整体健康评估（OK/WARN/FAIL 计数）
+- `collector.py`: CPU / 内存 / 磁盘指标采集（psutil + /proc 回退）
+- 检查失败自动触发告警（monitor → alert 桥接）
+
+### alert — 告警引擎
+
+```bash
+gcode alert list                   # 查看活跃告警
+gcode alert ack <alert-id>         # 确认告警
+gcode alert resolve <alert-id>     # 解决告警
+gcode alert summary                # 告警统计
+gcode alert-config add-rule ...    # 添加告警规则
+gcode alert-config events          # 查看告警事件
+```
+
+- `engine.py`: Alert 创建/确认/解决，JSON 持久化
+- `manager.py`: SQLite 规则存储、条件匹配、冷却去重
+- `notifier.py`: stdout/webhook 多渠道通知
+- 条件类型: `fail`, `warn`, `always`
+
+### logpipe — 日志管道
+
+```bash
+gcode log query --level ERROR --keyword timeout
+gcode log stats                     # 日志统计
+gcode log anomalies --threshold 10  # 异常检测
+gcode logpipe add-source --name syslog --type file --path /var/log/syslog
+gcode logpipe collect               # 采集日志
+gcode logpipe scan --limit 500      # 规则扫描
+```
+
+- `engine.py`: JSONL 存储、级别/关键词查询、模式聚合异常检测
+- `pipeline.py`: SQLite 采集 + 检测规则 + 增量文件读取
+- `detectors.py`: 正则模式匹配、日志级别启发式分类
+- `sources.py`: FileSource 文件日志适配器
+
+### report — 报告生成
+
+```bash
+gcode report --type daily
+gcode report --type weekly --output weekly.txt
+gcode report --type incident
+```
+
+报告自动拉取 monitor/alert/logpipe 实时数据，包含：
+- 服务健康状态 + 各项指标
+- 活跃告警列表
+- 日志异常检测结果
+
+### reasoning — LLM 推理层
+
+支持多模型：
+- **API**: Claude (Anthropic), GPT (OpenAI), DeepSeek
+- **本地**: Ollama (Qwen, Llama, Mistral 等)
+
+```yaml
+# config.yaml
+reasoner:
+  provider: anthropic        # anthropic / openai / deepseek / ollama
+  api_key: sk-xxx
+  model: claude-sonnet-4-6
+  # ollama 不需要 api_key
+```
+
+## API 接口
+
+### MCP Server (dp1 执行层)
+
+```bash
+python -m gcode.mcp.server    # stdio 模式
+```
+
+提供 12 个 Tool：
+
+| 分类 | Tool | 功能 | 权限 |
+|---|---|---|---|
+| 只读 | `sys_info` | 系统概况 | read_only |
+| | `ps_list` | 进程列表 | read_only |
+| | `df_h` | 磁盘使用 | read_only |
+| | `netstat` | 网络连接 | read_only |
+| | `journalctl` | 系统日志 | read_only |
+| 指标 | `cpu_usage` | CPU 使用率 | read_only |
+| | `mem_usage` | 内存使用率 | read_only |
+| | `io_stat` | IO 统计 | read_only |
+| | `disk_health` | 磁盘健康 | read_only |
+| 管理 | `service_status` | 服务状态 | read_only |
+| | `service_restart` | 服务重启 | read_write |
+| | `pkg_install` | 软件包安装 | admin |
+
+### Security Guard API (m1 安全层)
+
+```bash
+python -m src.api.server     # Unix Domain Socket: /run/gcode/gcode.sock
+```
+
+**请求格式：**
+```json
+{
+  "query": "查看 /var/log/messages 最近20行",
+  "user_id": "operator1",
+  "session_id": "550e8400-e29b-41d4-a716-446655440000"
+}
+```
+
+**响应：**
+```json
+{"status": "success", "data": {...}}          // safe
+{"status": "rejected", "reason": "..."}       // unsafe
+{"status": "needs_review", "reason": "..."}   // 需人工审核
+```
+
+**请求流程：**
+```
+客户端 → Unix Socket → IntentClassifier (Qwen2.5)
+  → [safe] → 转发 dp1 MCP Server → AuditLogger 记录
+  → [unsafe] → 拒绝
+  → [needs-review] → 暂存待审核
+```
+
+## 启动服务
+
+```bash
+# 开发调试
+python -m gcode.cli.main serve         # CLI REPL 模式
+python -m gcode.cli.main check         # 健康检查
+
+# systemd 生产模式
+sudo systemctl start gcode-security-guard gcode-mcp-server
+
+# 查看状态
+systemctl status gcode-security-guard gcode-mcp-server
+
+# 查看日志
+journalctl -u gcode-security-guard -f
+```
+
+## 测试
+
+```bash
+pip install -e ".[dev]"
+pytest tests/ -v
+# 56 passed
+```
+
+## 测试连接
+
+```bash
+echo '{"query":"查看磁盘使用"}' | socat - UNIX-CONNECT:/run/gcode/gcode.sock
+```
 
 ## 项目结构
 
 ```
 src/
-├── contracts/types.py           # m1↔dp1 接口契约
-├── intent/                      # 意图过滤（Qwen2.5-0.5B 零样本）
-│   ├── classifier.py
-│   └── model.py
-├── audit/                       # 审计系统（SQLite）
-│   ├── logger.py
-│   └── models.py
-├── api/server.py                # Unix Socket 接入层
-└── gcode/
-    ├── cli/main.py              # CLI 入口（Click）
-    ├── core/                    # 核心
-    │   ├── config.py            # 配置系统（YAML + 环境变量）
-    │   ├── engine.py            # Runbook 引擎
-    │   └── session.py           # 会话管理 + 推理路由
-    ├── reasoning/               # 多模型推理层 ★NEW
-    │   ├── types.py             # ToolDef, ReasonerRequest/Response
-    │   ├── base.py              # LLMProvider Protocol
-    │   ├── tool_registry.py     # 12 个 Tool 静态定义
-    │   ├── reasoner.py          # 编排器（LLM → Tool → 返回）
-    │   └── providers/
-    │       ├── openai_compat.py # Qwen / DeepSeek / Ollama
-    │       └── anthropic.py     # Claude
-    ├── mcp/                     # MCP Server + 执行层
-    │   ├── server.py            # FastMCP 入口
-    │   ├── executor.py          # 命令执行器 + 安全门禁
-    │   ├── sandbox.py           # seccomp + 资源限制
-    │   ├── tools_readonly.py    # 5 个只读 Tool
-    │   ├── tools_metrics.py     # 4 个指标 Tool
-    │   └── tools_management.py  # 3 个管理 Tool
-    ├── monitor/                 # 健康检查
-    ├── alert/                   # 告警引擎
-    ├── logpipe/                 # 日志管道
-    └── report/                  # 报告生成
+├── api/server.py              # Unix Domain Socket 服务端
+├── gcode/
+│   ├── cli/main.py            # CLI 入口 (Click)
+│   ├── core/                  # Runbook引擎 + 会话管理 + 配置
+│   ├── monitor/               # 健康检查引擎
+│   ├── alert/                 # 告警引擎
+│   ├── logpipe/               # 日志管道
+│   ├── report/                # 报告生成
+│   ├── mcp/                   # MCP Server (12 Tools)
+│   └── reasoning/             # LLM 推理层
+├── contracts/types.py         # SessionContext + ToolCallRecord
+├── deploy/
+│   ├── install.sh             # 一键部署脚本
+│   ├── gcode-security-guard.service
+│   ├── gcode-mcp-server.service
+│   └── gcode-selinux.te       # SELinux 策略
+├── tests/                     # 56 个单元测试
+├── config.yaml                # 配置模板
+└── pyproject.toml
 ```
-
-## 配置
-
-### 推理层（多模型切换）
-
-编辑 `config.yaml`：
-
-```yaml
-reasoner:
-  provider: ollama           # ollama | qwen | deepseek | claude
-  model: qwen2.5:7b          # 模型名
-  api_key: ""                # 留空，用 GCODE_REASONER_API_KEY 环境变量
-  max_tool_rounds: 3         # LLM 调用轮次上限
-  timeout: 30                # HTTP 超时（秒）
-```
-
-API key 通过环境变量注入（不入 YAML）：
-
-```bash
-export GCODE_REASONER_API_KEY="sk-xxx"    # DeepSeek / Qwen
-export GCODE_REASONER_API_KEY="sk-ant-xxx"  # Claude
-```
-
-### 意图分类
-
-```yaml
-intent:
-  model: Qwen/Qwen2.5-0.5B
-  safe_threshold: 0.6
-  needs_review_threshold: 0.4
-```
-
-### 监控 / 告警 / 日志
-
-```yaml
-monitor:
-  checks:
-    - type: http
-      url: http://localhost:8080/health
-    - type: disk
-      path: /
-      warn_pct: 80
-      crit_pct: 95
-
-alert:
-  rules:
-    - name: svc-down
-      monitor: http
-      condition: fail
-      cooldown_min: 2
-
-logpipe:
-  sources:
-    - name: syslog
-      type: file
-      path: /var/log/syslog
-```
-
-## MCP Tool 完整列表
-
-| 类别 | Tool | 参数 | 风险 | 说明 |
-|------|------|------|------|------|
-| 只读 | `sys_info` | — | read_only | 内核版本、主机名、架构 |
-| 只读 | `ps_list` | — | read_only | 进程列表 |
-| 只读 | `df_h` | — | read_only | 磁盘使用 |
-| 只读 | `netstat` | — | read_only | 网络连接（ss） |
-| 只读 | `journalctl` | service, lines | read_only | 系统日志 |
-| 指标 | `cpu_usage` | — | read_only | CPU 使用率 |
-| 指标 | `mem_usage` | — | read_only | 内存 + Swap |
-| 指标 | `io_stat` | — | read_only | 磁盘 IO |
-| 指标 | `disk_health` | path | read_only | 磁盘健康检查 |
-| 管理 | `service_status` | service_name | medium | 服务状态查看 |
-| 管理 | `service_restart` | service_name | admin | 重启服务（需确认） |
-| 管理 | `pkg_install` | package_name | admin | 安装 RPM（需确认） |
-
-## CLI 命令
-
-```bash
-gcode serve                  # 交互式 REPL
-gcode ask "nginx 状态？"      # 单次查询（LLM 推理）
-gcode run ./runbooks/restart-nginx.yaml        # Runbook 执行
-gcode run ./runbooks/restart-nginx.yaml --dry-run
-gcode report --type daily                       # 日报
-gcode check                                     # 健康检查
-```
-
-## 安全模型
-
-| 层 | 位置 | 机制 | 拦截什么 |
-|----|------|------|---------|
-| ① 意图过滤 | `intent/classifier.py` | Qwen2.5-0.5B 多标签分类 | rm -rf, mkfs, chmod 777 等 |
-| ② 最小权限 | `mcp/executor.py` | 正则拦截 + dry-run + 确认门禁 | 敏感路径写入、非法字符注入 |
-| ③ 执行沙箱 | `mcp/sandbox.py` | seccomp + rlimit | 非白名单 syscall、资源滥用 |
-| ④ 思维链审计 | `audit/logger.py` | SQLite 全量 | 事后回溯所有操作 |
-
-## 依赖
-
-```bash
-# 核心依赖（必需）
-pip install -e .
-
-# 云端 LLM（qwen / deepseek / claude）
-pip install "gcode-security-guard[reasoner-openai]"
-
-# 或全部推理后端
-pip install "gcode-security-guard[reasoner]"
-
-# 开发
-pip install "gcode-security-guard[dev]"
-```
-
-## 故障排查
-
-| 问题 | 检查 |
-|------|------|
-| CLI 无响应 | Ollama 是否运行？`ollama list` |
-| LLM 不调 tool | 模型是否支持 function calling？qwen2.5:7b+ / deepseek-chat 均支持 |
-| Socket 连接拒绝 | `sudo mkdir -p /run/gcode && sudo chmod 777 /run/gcode` |
-| 意图分类全 needs-review | 降低 `safe_threshold` 到 0.4 |
 
 ## 配对仓库
 
-- [Gcode（主 repo）](https://github.com/yGGGgGGGy/Gcode) — 完整部署 + submodule + systemd
-- [gcode-mcp-server](https://github.com/yGGGgGGGy/gcode-mcp-server) — 执行层（dp1）
+- [gcode-mcp-server](https://github.com/yGGGgGGGy/gcode-mcp-server) — MCP Server + Tool 实现 + 执行层约束 (dp1)
 
 ## License
 
